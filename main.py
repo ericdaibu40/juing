@@ -312,18 +312,16 @@ async def receive_last4(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     session.last4 = last4
     
-    update.message.reply_text(
+    await update.message.reply_text(
         f"🔍 Начинаю подбор карты с последними цифрами {last4}...\n"
         f"Это займет некоторое время (примерно 10 минут)."
     )
     
-    # Start brute force in separate thread
+    # Start brute force as async task
     import asyncio
-    loop = asyncio.get_event_loop()
-    session.brute_force_thread = threading.Thread(
-        target=lambda: loop.run_until_complete(brute_force_worker(session, context.application))
+    session.brute_force_thread = asyncio.create_task(
+        brute_force_worker(session, context.application)
     )
-    session.brute_force_thread.start()
     
     session.state = State.BRUTE_FORCE
     return State.BRUTE_FORCE.value
@@ -349,7 +347,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.effective_message:
         await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
 
-async def main():
+def main():
     """Start the bot"""
     app = Application.builder().token(TOKEN).build()
     
@@ -378,8 +376,7 @@ async def main():
     app.add_error_handler(error_handler)
     
     # Start the Bot
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == '__main__':
-    import asyncio
-    asyncio.run(main())
+    main()
