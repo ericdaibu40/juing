@@ -218,13 +218,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     
     if user_id in user_sessions:
-        update.message.reply_text("❌ У вас уже есть активная сессия. Закончите текущую.")
+        await update.message.reply_text("❌ У вас уже есть активная сессия. Закончите текущую.")
         return ConversationHandler.END
     
     session = UserSession(user_id)
     user_sessions[user_id] = session
     
-    update.message.reply_text(
+    await update.message.reply_text(
         "👋 Добро пожаловать! Отправьте номер телефона в формате +79999999999"
     )
     return State.WAITING_PHONE.value
@@ -233,7 +233,7 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     """Receive phone number and start browser session"""
     user_id = update.effective_user.id
     if user_id not in user_sessions:
-        update.message.reply_text("❌ Сессия не найдена. Начните с /start")
+        await update.message.reply_text("❌ Сессия не найдена. Начните с /start")
         return ConversationHandler.END
     
     session = user_sessions[user_id]
@@ -241,34 +241,34 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     # Validate phone number format
     if not phone.startswith('+7') or len(phone) != 12:
-        update.message.reply_text("❌ Неверный формат номера. Используйте +79999999999")
+        await update.message.reply_text("❌ Неверный формат номера. Используйте +79999999999")
         return State.WAITING_PHONE.value
     
     session.phone = phone
     
     # Start browser session
-    update.message.reply_text("🔄 Запускаю браузер...")
+    await update.message.reply_text("🔄 Запускаю браузер...")
     try:
         start_browser_session(session)
         if enter_phone_number(session):
-            update.message.reply_text(
+            await update.message.reply_text(
                 "✅ Номер введен. Теперь отправьте SMS код, который пришел на телефон:"
             )
             session.state = State.WAITING_SMS
             return State.WAITING_SMS.value
         else:
-            update.message.reply_text("❌ Ошибка при вводе номера. Попробуйте еще раз.")
+            await update.message.reply_text("❌ Ошибка при вводе номера. Попробуйте еще раз.")
             return State.WAITING_PHONE.value
     except Exception as e:
         logger.error(f"Error starting browser: {e}")
-        update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
         return ConversationHandler.END
 
 async def receive_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive SMS code and proceed to card entry"""
     user_id = update.effective_user.id
     if user_id not in user_sessions:
-        update.message.reply_text("❌ Сессия не найдена. Начните с /start")
+        await update.message.reply_text("❌ Сессия не найдена. Начните с /start")
         return ConversationHandler.END
     
     session = user_sessions[user_id]
@@ -276,30 +276,30 @@ async def receive_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     # Validate SMS code
     if not sms_code.isdigit() or len(sms_code) != 4:
-        update.message.reply_text("❌ Неверный формат кода. Отправьте 4 цифры.")
+        await update.message.reply_text("❌ Неверный формат кода. Отправьте 4 цифры.")
         return State.WAITING_SMS.value
     
-    update.message.reply_text("🔄 Ввожу код...")
+    await update.message.reply_text("🔄 Ввожу код...")
     try:
         if enter_sms_code(session, sms_code):
-            update.message.reply_text(
+            await update.message.reply_text(
                 "✅ Код принят. Теперь отправьте последние 4 цифры карты:"
             )
             session.state = State.WAITING_LAST4
             return State.WAITING_LAST4.value
         else:
-            update.message.reply_text("❌ Ошибка при вводе кода. Попробуйте еще раз.")
+            await update.message.reply_text("❌ Ошибка при вводе кода. Попробуйте еще раз.")
             return State.WAITING_SMS.value
     except Exception as e:
         logger.error(f"Error entering SMS: {e}")
-        update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
         return ConversationHandler.END
 
 async def receive_last4(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive last 4 digits and start brute force"""
     user_id = update.effective_user.id
     if user_id not in user_sessions:
-        update.message.reply_text("❌ Сессия не найдена. Начните с /start")
+        await update.message.reply_text("❌ Сессия не найдена. Начните с /start")
         return ConversationHandler.END
     
     session = user_sessions[user_id]
@@ -307,7 +307,7 @@ async def receive_last4(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     # Validate last 4 digits
     if not last4.isdigit() or len(last4) != 4:
-        update.message.reply_text("❌ Неверный формат. Отправьте 4 цифры.")
+        await update.message.reply_text("❌ Неверный формат. Отправьте 4 цифры.")
         return State.WAITING_LAST4.value
     
     session.last4 = last4
@@ -338,7 +338,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
         del user_sessions[user_id]
     
-    update.message.reply_text("❌ Операция отменена.")
+    await update.message.reply_text("❌ Операция отменена.")
     return ConversationHandler.END
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,7 +366,7 @@ def main():
             ],
             State.BRUTE_FORCE.value: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
-                             lambda update, context: update.message.reply_text("⏳ Идет подбор карты..."))
+                             lambda update, context: asyncio.create_task(update.message.reply_text("⏳ Идет подбор карты...")))
             ],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
