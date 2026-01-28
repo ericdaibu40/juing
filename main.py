@@ -8,6 +8,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
@@ -68,10 +70,13 @@ def start_browser_session(session: UserSession):
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920,1080')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     
-    session.driver = webdriver.Chrome(options=options)
+    service = Service(ChromeDriverManager().install())
+    session.driver = webdriver.Chrome(service=service, options=options)
     session.driver.get(LOGIN_URL)
     time.sleep(2)
 
