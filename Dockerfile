@@ -35,15 +35,19 @@ RUN wget -q -O /tmp/google-chrome-key.pub https://dl-ssl.google.com/linux/linux_
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/* /tmp/google-chrome-key.pub
 
-# Install ChromeDriver
+# Install ChromeDriver - get matching version from Chrome for Testing API
 RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}') \
     && echo "Chrome version: $CHROME_VERSION" \
-    && CHROMEDRIVER_URL="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" \
-    && wget -q -O /tmp/chromedriver-linux64.zip "$CHROMEDRIVER_URL" \
+    && CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d '.' -f 1) \
+    && echo "Chrome major version: $CHROME_MAJOR" \
+    && CHROMEDRIVER_VERSION=$(wget -qO- "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_MAJOR" 2>/dev/null || echo "$CHROME_VERSION") \
+    && echo "ChromeDriver version to download: $CHROMEDRIVER_VERSION" \
+    && wget -q -O /tmp/chromedriver-linux64.zip "https://storage.googleapis.com/chrome-for-testing-public/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" \
     && unzip /tmp/chromedriver-linux64.zip -d /tmp/ \
     && mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/ \
     && chmod +x /usr/local/bin/chromedriver \
-    && rm -rf /tmp/chromedriver-linux64.zip /tmp/chromedriver-linux64
+    && rm -rf /tmp/chromedriver-linux64.zip /tmp/chromedriver-linux64 \
+    && chromedriver --version
 
 WORKDIR /app
 
