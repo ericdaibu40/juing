@@ -47,7 +47,7 @@ class UserSession:
 user_sessions: Dict[int, UserSession] = {}
 
 # Telegram Bot Token (replace with your token)
-TOKEN = "8163066452:AAGc_n0x--A0xtmCdVwp5NGZLsCi5qFC0_I"
+TOKEN = "8214942146:AAEENOHKuLsJVZMiSlNz9E5a0TRGmjcu8vE"
 
 # T-Bank URLs
 MAIN_URL = "https://www.tbank.ru/"
