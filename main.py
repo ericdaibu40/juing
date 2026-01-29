@@ -12,8 +12,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.service import Service
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 
 # Enable logging
 logging.basicConfig(
@@ -419,30 +419,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     
     if user_id in user_sessions:
-        keyboard = [
-            [InlineKeyboardButton("❌ Закрыть текущую сессию", callback_data="force_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "❌ У вас уже есть активная сессия.",
-            reply_markup=reply_markup
+            "❌ У вас уже есть активная сессия.\n"
+            "/cancel - отменить текущую"
         )
         return ConversationHandler.END
     
     session = UserSession(user_id)
     user_sessions[user_id] = session
     
-    keyboard = [
-        [InlineKeyboardButton("❌ Отменить", callback_data="cancel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
         "👋 Добро пожаловать!\n\n"
         "📱 Отправьте номер телефона в формате:\n"
-        "`+79999999999`",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        "+79999999999\n\n"
+        "/cancel - отменить"
     )
     return State.WAITING_PHONE.value
 
@@ -471,16 +461,11 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             # Запускаем таймер ожидания для resend
             session.last_sms_time = time.time()
             
-            keyboard = [
-                [InlineKeyboardButton("🔁 Отправить код повторно (ждите 60 сек.)", callback_data="resend")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
                 "✅ Номер введен!\n\n"
-                "📲 Отправьте SMS код, который пришел на телефон:\n\n"
-                "⏳ Повторная отправка доступна через 60 сек.",
-                reply_markup=reply_markup
+                "📲 Отправьте SMS код (4 цифры):\n\n"
+                "/resend - отправить код повторно\n"
+                "/cancel - отменить"
             )
             session.state = State.WAITING_SMS
             return State.WAITING_SMS.value
@@ -515,14 +500,10 @@ async def receive_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await update.message.reply_text("🔄 Ввожу код...")
     try:
         if await enter_sms_code(session, sms_code, context.application.bot):
-            keyboard = [
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
                 "✅ Код принят!\n\n"
-                "💳 Отправьте последние 4 цифры карты:",
-                reply_markup=reply_markup
+                "💳 Отправьте последние 4 цифры карты:\n\n"
+                "/cancel - отменить"
             )
             session.state = State.WAITING_LAST4
             return State.WAITING_LAST4.value
@@ -576,28 +557,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
         del user_sessions[user_id]
     
-    await update.message.reply_text("❌ Операция отменена.")
-    return ConversationHandler.END
-
-async def back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Go back to previous step or restart"""
-    user_id = update.effective_user.id
-    
-    if user_id in user_sessions:
-        session = user_sessions[user_id]
-        session.stop_brute_force = True
-        
-        if session.driver:
-            try:
-                session.driver.quit()
-            except:
-                pass
-        
-        del user_sessions[user_id]
-    
     await update.message.reply_text(
-        "⬅️ Возврат назад. Сессия сброшена.\n\n"
-        "👉 Нажмите /start чтобы начать заново."
+        "❌ Операция отменена.\n\n"
+        "/start - начать заново"
     )
     return ConversationHandler.END
 
@@ -609,140 +571,15 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def brute_force_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show status during brute force"""
-    keyboard = [
-        [InlineKeyboardButton("❌ Остановить", callback_data="cancel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("⏳ Идет подбор карты...", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "⏳ Идет подбор карты...\n\n"
+        "/cancel - остановить"
+    )
     return State.BRUTE_FORCE.value
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle inline button callbacks"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    action = query.data
-    
-    if action == "cancel" or action == "force_cancel":
-        if user_id in user_sessions:
-            session = user_sessions[user_id]
-            session.stop_brute_force = True
-            if session.driver:
-                try:
-                    session.driver.quit()
-                except:
-                    pass
-            del user_sessions[user_id]
-        
-        keyboard = [[InlineKeyboardButton("🚀 Начать заново", callback_data="restart")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("❌ Операция отменена.", reply_markup=reply_markup)
-        return ConversationHandler.END
-    
-    elif action == "back":
-        if user_id in user_sessions:
-            session = user_sessions[user_id]
-            session.stop_brute_force = True
-            if session.driver:
-                try:
-                    session.driver.quit()
-                except:
-                    pass
-            del user_sessions[user_id]
-        
-        keyboard = [[InlineKeyboardButton("🚀 Начать заново", callback_data="restart")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("⬅️ Сессия сброшена.", reply_markup=reply_markup)
-        return ConversationHandler.END
-    
-    elif action == "restart":
-        # Создаем новую сессию
-        if user_id in user_sessions:
-            del user_sessions[user_id]
-        
-        session = UserSession(user_id)
-        user_sessions[user_id] = session
-        
-        keyboard = [
-            [InlineKeyboardButton("❌ Отменить", callback_data="cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            "👋 Добро пожаловать!\n\n"
-            "📱 Отправьте номер телефона в формате:\n"
-            "+79999999999",
-            reply_markup=reply_markup
-        )
-        return State.WAITING_PHONE.value
-    
-    elif action == "resend":
-        if user_id in user_sessions:
-            session = user_sessions[user_id]
-            
-            # Проверка таймера
-            current_time = time.time()
-            if session.last_sms_time > 0:
-                time_passed = current_time - session.last_sms_time
-                if time_passed < 60:
-                    remaining = int(60 - time_passed)
-                    progress = int((time_passed / 60) * 20)
-                    progress_bar = '▓' * progress + '░' * (20 - progress)
-                    percent = int((time_passed / 60) * 100)
-                    
-                    keyboard = [
-                        [InlineKeyboardButton(f"🔄 Обновить ({remaining} сек.)", callback_data="resend")],
-                        [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    
-                    try:
-                        await query.edit_message_text(
-                            f"⏳ *Ожидание повторной отправки*\n\n"
-                            f"До отправки: *{remaining}* сек.\n"
-                            f"`{progress_bar}` {percent}%\n\n"
-                            f"📲 Или введите SMS код:",
-                            reply_markup=reply_markup,
-                            parse_mode='Markdown'
-                        )
-                    except:
-                        pass  # Ignore if message is same
-                    return State.WAITING_SMS.value
-            
-            # Отправляем код повторно
-            await query.edit_message_text("🔄 Отправляю код повторно...")
-            success = await resend_sms_code(session, context.application.bot)
-            
-            keyboard = [
-                [InlineKeyboardButton("🔁 Отправить еще раз (60 сек.)", callback_data="resend")],
-                [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            if success:
-                await query.edit_message_text(
-                    "✅ *Код отправлен повторно!*\n\n"
-                    "📲 Отправьте новый SMS код:",
-                    reply_markup=reply_markup,
-                    parse_mode='Markdown'
-                )
-            else:
-                await query.edit_message_text(
-                    "⏳ Подождите перед повторной отправкой\n\n"
-                    "📲 Или введите SMS код:",
-                    reply_markup=reply_markup
-                )
-        return State.WAITING_SMS.value
-    
-    return ConversationHandler.END
 
 def main():
     """Start the bot"""
     app = Application.builder().token(TOKEN).build()
-    
-    # Callback handler for inline buttons
-    app.add_handler(CallbackQueryHandler(button_callback))
     
     # Create conversation handler
     conv_handler = ConversationHandler(
@@ -752,7 +589,8 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)
             ],
             State.WAITING_SMS.value: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sms)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sms),
+                CommandHandler('resend', lambda u, c: resend_sms_handler(u, c))
             ],
             State.WAITING_LAST4.value: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_last4)
@@ -763,7 +601,6 @@ def main():
         },
         fallbacks=[
             CommandHandler('cancel', cancel),
-            CommandHandler('back', back),
         ],
     )
     
@@ -772,6 +609,14 @@ def main():
     
     # Start the Bot
     app.run_polling()
+
+async def resend_sms_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle /resend command"""
+    user_id = update.effective_user.id
+    if user_id in user_sessions:
+        session = user_sessions[user_id]
+        await resend_sms_code(session, context.application.bot)
+    return State.WAITING_SMS.value
 
 if __name__ == '__main__':
     main()
