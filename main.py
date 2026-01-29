@@ -687,34 +687,50 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 time_passed = current_time - session.last_sms_time
                 if time_passed < 60:
                     remaining = int(60 - time_passed)
-                    progress = int((time_passed / 60) * 10)
-                    progress_bar = '█' * progress + '░' * (10 - progress)
+                    progress = int((time_passed / 60) * 20)
+                    progress_bar = '▓' * progress + '░' * (20 - progress)
+                    percent = int((time_passed / 60) * 100)
                     
                     keyboard = [
-                        [InlineKeyboardButton(f"⏳ Ждите {remaining} сек...", callback_data="resend")],
+                        [InlineKeyboardButton(f"🔄 Обновить ({remaining} сек.)", callback_data="resend")],
                         [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     
-                    await query.edit_message_text(
-                        f"⏳ Подождите {remaining} сек. перед повторной отправкой\n\n"
-                        f"[{progress_bar}] {int(time_passed)}/60 сек.\n\n"
-                        "📲 Или отправьте SMS код сейчас:",
-                        reply_markup=reply_markup
-                    )
+                    try:
+                        await query.edit_message_text(
+                            f"⏳ *Ожидание повторной отправки*\n\n"
+                            f"До отправки: *{remaining}* сек.\n"
+                            f"`{progress_bar}` {percent}%\n\n"
+                            f"📲 Или введите SMS код:",
+                            reply_markup=reply_markup,
+                            parse_mode='Markdown'
+                        )
+                    except:
+                        pass  # Ignore if message is same
                     return State.WAITING_SMS.value
             
             # Отправляем код повторно
+            await query.edit_message_text("🔄 Отправляю код повторно...")
             success = await resend_sms_code(session, context.application.bot)
+            
+            keyboard = [
+                [InlineKeyboardButton("🔁 Отправить еще раз (60 сек.)", callback_data="resend")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             if success:
-                keyboard = [
-                    [InlineKeyboardButton("🔁 Отправить еще раз (ждите 60 сек.)", callback_data="resend")],
-                    [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    "✅ Код отправлен повторно!\n\n"
+                    "✅ *Код отправлен повторно!*\n\n"
                     "📲 Отправьте новый SMS код:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            else:
+                await query.edit_message_text(
+                    "⏳ Подождите перед повторной отправкой\n\n"
+                    "📲 Или введите SMS код:",
                     reply_markup=reply_markup
                 )
         return State.WAITING_SMS.value
