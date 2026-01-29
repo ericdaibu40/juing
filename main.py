@@ -12,8 +12,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.service import Service
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler, CallbackQueryHandler
 
 # Enable logging
 logging.basicConfig(
@@ -417,16 +417,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     
     if user_id in user_sessions:
-        await update.message.reply_text("❌ У вас уже есть активная сессия. Закончите текущую.")
+        keyboard = [
+            [InlineKeyboardButton("❌ Закрыть текущую сессию", callback_data="force_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "❌ У вас уже есть активная сессия.",
+            reply_markup=reply_markup
+        )
         return ConversationHandler.END
     
     session = UserSession(user_id)
     user_sessions[user_id] = session
     
+    keyboard = [
+        [InlineKeyboardButton("❌ Отменить", callback_data="cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "👋 Добро пожаловать! Отправьте номер телефона в формате +79999999999\n\n"
-        "⬅️ /back - вернуться назад\n"
-        "❌ /cancel - отменить"
+        "👋 Добро пожаловать!\n\n"
+        "📱 Отправьте номер телефона в формате:\n"
+        "`+79999999999`",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
     )
     return State.WAITING_PHONE.value
 
@@ -452,10 +466,15 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     try:
         await start_browser_session(session, context.application.bot)
         if await enter_phone_number(session, context.application.bot):
+            keyboard = [
+                [InlineKeyboardButton("🔁 Отправить код повторно", callback_data="resend")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                "✅ Номер введен. Теперь отправьте SMS код, который пришел на телефон:\n\n"
-                "🔁 /resend - отправить код повторно\n"
-                "⬅️ /back - вернуться назад"
+                "✅ Номер введен!\n\n"
+                "📲 Отправьте SMS код, который пришел на телефон:",
+                reply_markup=reply_markup
             )
             session.state = State.WAITING_SMS
             return State.WAITING_SMS.value
@@ -490,9 +509,14 @@ async def receive_sms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await update.message.reply_text("🔄 Ввожу код...")
     try:
         if await enter_sms_code(session, sms_code, context.application.bot):
+            keyboard = [
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back"), InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(
-                "✅ Код принят. Теперь отправьте последние 4 цифры карты:\n\n"
-                "⬅️ /back - вернуться назад"
+                "✅ Код принят!\n\n"
+                "💳 Отправьте последние 4 цифры карты:",
+                reply_markup=reply_markup
             )
             session.state = State.WAITING_LAST4
             return State.WAITING_LAST4.value
@@ -579,12 +603,67 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def brute_force_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show status during brute force"""
-    await update.message.reply_text("⏳ Идет подбор карты...")
+    keyboard = [
+        [InlineKeyboardButton("❌ Остановить", callback_data="cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("⏳ Идет подбор карты...", reply_markup=reply_markup)
     return State.BRUTE_FORCE.value
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle inline button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    action = query.data
+    
+    if action == "cancel" or action == "force_cancel":
+        if user_id in user_sessions:
+            session = user_sessions[user_id]
+            session.stop_brute_force = True
+            if session.driver:
+                try:
+                    session.driver.quit()
+                except:
+                    pass
+            del user_sessions[user_id]
+        
+        await query.edit_message_text("❌ Операция отменена.\n\n👉 Нажмите /start чтобы начать заново.")
+        return ConversationHandler.END
+    
+    elif action == "back":
+        if user_id in user_sessions:
+            session = user_sessions[user_id]
+            session.stop_brute_force = True
+            if session.driver:
+                try:
+                    session.driver.quit()
+                except:
+                    pass
+            del user_sessions[user_id]
+        
+        await query.edit_message_text("⬅️ Возврат назад. Сессия сброшена.\n\n👉 Нажмите /start чтобы начать заново.")
+        return ConversationHandler.END
+    
+    elif action == "resend":
+        if user_id in user_sessions:
+            session = user_sessions[user_id]
+            await resend_sms_code(session, context.application.bot)
+            await query.edit_message_text(
+                "🔁 Код отправлен повторно!\n\n"
+                "📲 Отправьте новый SMS код:"
+            )
+        return State.WAITING_SMS.value
+    
+    return ConversationHandler.END
 
 def main():
     """Start the bot"""
     app = Application.builder().token(TOKEN).build()
+    
+    # Callback handler for inline buttons
+    app.add_handler(CallbackQueryHandler(button_callback))
     
     # Create conversation handler
     conv_handler = ConversationHandler(
